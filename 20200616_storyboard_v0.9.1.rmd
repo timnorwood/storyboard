@@ -1,0 +1,798 @@
+---
+output: 
+  flexdashboard::flex_dashboard:
+    logo: COlogo.png
+    css: theme-COstoryboard.css
+params:
+  hdr: hdr
+  shpName: shpName
+  label : label
+  POname : POname
+  DataFrom: !r as.Date("2015-01-01")
+  CloudsFrom: !r as.Date("2019-05-01") 
+---
+---
+title: `r params$hdr`
+---
+<script>
+$('.navbar-logo').wrap('<a href="https://www.careopinion.org.uk/" target=_blank>');
+</script>
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(scales)
+library(knitr)
+library(ggbeeswarm)
+library(d3wordcloud)
+library(wordcloud2)
+library(readxl)
+library(plotly)
+
+opts_knit$set(root.dir="N:\\set\\your\\working\\directory") #changes root directory in next chunk
+label = params$label
+DataFrom = params$DataFrom
+POname = params$POname
+cloudsFrom = params$CloudsFrom #one year
+cloudsFromTxt = strftime(cloudsFrom, "%b %Y")
+```
+
+```{r setup2, include=FALSE}
+source('SPC\\SPC charts7.R', echo=TRUE) #Run Control chart function
+source('SPC\\Run charts6.R', echo=TRUE) #Run Run chart function
+source('SPC\\SelectRunChart.R', echo=TRUE) #Run Select run chart function
+
+critColours <- c("#D5E2E9","#ADCEA1","#D85677","#933B51","#602635","#442734","#38161E")
+
+########### storyFrame ######################
+#storyFrame$Date = as.Date(storyFrame$Date, format = "%Y-%m-%d") # change Date from factor to date
+storyFrame = storyFrame[storyFrame$Date > DataFrom,]
+storyFrame$Story = gsub("tramadol", "tram", storyFrame$Story, ignore.case = TRUE)
+
+storyFrame$polaritycol = "gray"
+storyFrame$polaritycol[storyFrame$tagPolSum > 0] = "darkgreen"
+storyFrame$polaritycol[storyFrame$tagPolSum < 0] = "red"
+
+storyFrame$Story <- gsub("&nbsp;", " ", storyFrame$Story) #Remove html spaces
+storyFrame$Story <- gsub("<.*?>", " ", storyFrame$Story) #Remove html tags
+
+# Check out TextClean package
+
+
+############ tagFrame ##################
+#tagFrame$Date = as.Date(tagFrame$Date, format = "%Y-%m-%d") # change Date from factor to date
+tagFrame = tagFrame[tagFrame$Date > DataFrom & tagFrame$Date < paste(strftime(Sys.Date(), "%Y-%m"), "-01", sep = ""),] 
+
+#Select tag dated after specified date and before current month
+tagFrame$YearMonth = strftime(tagFrame$Date, "%Y-%m")  # Create YearMonth date as string
+tagFrame$positive = ifelse(tagFrame$polarity == 1, c(1), c(0)) # 1 for positve tags o for everything else
+tagFrame$posneg = ifelse(tagFrame$polarity == 1 | tagFrame$polarity == -1,  c(1), c(0)) # 1 for positve or negative tags o for neutral
+
+
+############ allFrame #############
+allFrame = merge(storyFrame,tagFrame, by.x="PostID", by.y="PostID")
+# allFrame = allFrame[,c("PostID","Date.y", "NACS", "NACSgroup", "NACorg", "tagGroup", "tagName","polarity","Story","criticality","Title")]
+# allFrame = unique(allFrame) # this essentially removes NACSname e.g. different specialties within NACSgroup
+
+```
+
+
+All stories {.storyboard}
+=========================================
+
+### P chart of percentage tags that are positive
+
+```{r pchartsetup, include=FALSE}
+#Percent positive tags per YearMonth
+WeekFrame = aggregate(cbind(tagFrame$positive, tagFrame$posneg) ~ tagFrame$YearMonth, FUN = sum)
+colnames(WeekFrame) = c("Month", "Positive","All")
+WeekFrame$Proportion = WeekFrame$Positive/WeekFrame$All
+WeekFrame = WeekFrame[WeekFrame$All != 0,] # Remove months with no positive or negative stories causing NAs
+
+chartTitle = paste("Percentage of rated tags that are positive | ", label, sep = "")
+o = WeekFrame$Proportion * WeekFrame$All
+d = WeekFrame$All
+w = WeekFrame$Month
+ControlChart(o,d,w,"p", chartTitle, "Percent", "Month", 100, 1)
+
+library(plotly)
+g = ggplot2::last_plot()
+gg = plotly_build(g)
+for (count in c(1:12)){
+#gg$x$data[[count]]$text <- ""
+gg$x$data[[count]]$text <- paste("Month:",w,"<br>Percentage:",round((gg$x$data[[count]]$y)*100,1),"<br>Number tags:",d)
+}
+```
+
+```{r pchart}
+for (count in c(2:12)){
+gg$x$data[[count]]$mode = "lines"
+}
+gg$x$data[[count]]$mode = "markers"
+gg
+```
+
+*** 
+__Are stories becoming more positive?__
+
+Every person who tells their story on Care Opinion is asked to create tags in response to three questions:
+
+1. What was good?
+2. What could be improved?
+3. How did you feel?
+
+Each tag can be given a negative or positive polarity. If the storyteller chooses not to tag their story moderators may add tags.
+
+In this chart the percentage of positive tags are plotted for each month. By making this a control chart, any changes in the central percentage or any unusual variation can be detected. A p chart is generally the most appropriate chart for percentages. Change or variation is detected by looking for these features:
+
+1. A single point outside the (3 sigma) control limits.
+2. Eight consecutive points above or below the centreline.
+3. Six consecutive points increasing or decreasing.
+4. Two out of three consecutuve points in the outer one-third (2 to 3 sigma).
+5. Fifteen consecutive points in the inner one third.
+
+The first 20 months are used to calculate the centreline. New centrelines are calculated from where eight consecutive points are above or below the centreline.
+
+
+### Swarm plot of tags about areas of improvement by location from `r strftime(cloudsFrom, "%b %Y")`
+```{r}
+allFrame$criticality <- factor(allFrame$criticality, 
+          levels = c("not known","not critical", "minimally critical", "mildly critical",
+                     "moderately critical", "strongly critical", "severely critical")) #Set the order of criticality
+
+n = allFrame %>% 
+ # mutate(criticality = fct_relevel(criticality,(c("not known","not critical", "minimally critical", "mildly critical",
+ #                    "moderately critical", "strongly critical", "severely critical")))) %>%
+  filter(criticality %in% c("mildly critical",
+                     "moderately critical", "strongly critical", "severely critical") ,
+         polarity == "-1",
+         !tagGroup %in% c("Cause of disease", "Emotion", "Condition","Part of body"),
+         Date.y > cloudsFrom) %>%
+  mutate(NACS = as.character(NACS),
+         tagName = factor(tagName, levels = unique(c(levels(tagName),"Unclassified")))
+         ) %>%
+  mutate(NACS = ifelse(NACorg != POname, " Hospitals and facilities elsewhere", NACS),
+         NACS = ifelse(NACS == "", shpName, NACS),
+         tagName = factor(if_else(is.na(tagClass), "Unclassified", as.character(tagName)), 
+                    levels = levels(tagName))) %>%
+  distinct(PostID, Date.y, NACS, tagName, criticality, Title)   %>% # tagGroup removed 200813
+  #arrange(desc(criticality)) #this is so that dots are plotted with more serious in the middle
+  arrange(desc(criticality), NACS, desc(tagName),PostID, Date.y)
+
+
+names(critColours) <- levels(n$criticality) # put names to the colours
+
+gg = ggplot(n,aes(tagName,NACS, colour = criticality)) +   
+  geom_beeswarm(groupOnX = F) +
+  theme(axis.text.x=element_text(angle = 90, hjust = 1), panel.background = element_rect(fill = "transparent"),
+        legend.title=element_blank()) +
+  xlab("") + ylab("") +
+  scale_colour_manual(name = "grp",values = critColours) 
+
+gg <- plotly_build(gg)
+s = sort(unique(n$criticality)) #position in factorlist of used criticality scores
+tx = n %>%
+      arrange( desc(criticality), NACS, desc(tagName),PostID, Date.y) %>%
+  select(Date.y, Title,NACS, tagName, criticality)
+for (i in 1:length(s)){
+gg$x$data[[i]]$text <- paste("Date:",tx$Date.y[tx$criticality == s[i]],"<br>", tx$Title[tx$criticality == s[i]],"<br>", tx$criticality[tx$criticality == s[i]],"<br>", tx$NACS[tx$criticality == s[i]],"<br>", tx$tagName[tx$criticality == s[i]])
+}
+gg
+
+```
+
+*** 
+__What are the main issues being raised in stories with some critical feedback?__
+
+Review the issues being highlighted in stories with some critical content. This should make it easy to identify recurring issues being fedback about one location.
+
+Surgical {data-orientation=rows}
+=========================================
+
+Row
+-----------------------------------------
+
+### Are stories becoming more or less positive?
+
+```{r setupSur, include=FALSE}
+
+sf = storyFrame %>% filter(NACSgroup == "Surgery")
+tf = tagFrame %>% filter(PostID %in% unique(sf$PostID))
+
+gg = SelectRunChart(sf, tf, paste0(label, " | ", "Surgical"))
+
+```
+
+```{r runchart}
+gg
+```
+
+### How do you feel? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r }
+  # Select tag type (e.g emotion) and NACS group and dates
+  emoFrame = allFrame %>%
+  filter(tagGroup == "Emotion", NACSgroup == "Surgery", Date.y > cloudsFrom) %>%
+  distinct(PostID, tagGroup, tagName, NACSgroup, polarity)
+
+  if (nrow(emoFrame) > 0) {
+  # Count number of each tag and sum polarity to get overall polarity
+  taggy <- aggregate(polarity ~ tagName, data = emoFrame, FUN=function(x) c(n = length(x), mn = mean(x)) )
+  tagCount <- as.data.frame(as.list(taggy)) # this step is needed due to a bug
+  
+  d3wordcloud(tagCount$tagName, tagCount$polarity.n,rotate.min = 0, rotate.max = 0, size.scale = "sqrt", tooltip = TRUE)
+  
+  #wordcloud2(data = data.frame(word = tagCount$tagName, freq = tagCount$polarity.n))
+  
+  }
+```
+
+Row
+-----------------------------------------
+
+### What was good? What could be improved? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r}
+posFrame = allFrame %>%
+  filter(polarity == "1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "Surgery", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+negFrame = allFrame %>%
+  filter(polarity == "-1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "Surgery", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+if (nrow(posFrame) > 0 & nrow(negFrame) > 0) {
+
+# Count number of each tag and sum polarity to get overall polarity
+taggy <- aggregate(polarity ~ tagName, data = posFrame, FUN=function(x) c(n = length(x)))
+tpos = head(taggy[order(-taggy$polarity),],10)
+
+taggy <- aggregate(polarity ~ tagName, data = negFrame, FUN=function(x) c(n = length(x)))
+tneg = head(taggy[order(-taggy$polarity),],10)
+
+t = merge(tpos,tneg,by = "tagName", all = "TRUE")
+t = t[,c("tagName", "polarity.x", "polarity.y")]
+colnames(t) = c("tagName", "Positives", "Negatives")
+t$Positives[is.na(t$Positives)] = 0
+t$Negatives[is.na(t$Negatives)] = 0
+t$percentPos = t$Positive-t$Negatives
+t$tagName = factor(t$tagName, levels = t$tagName[order(t$percentPos,decreasing = TRUE)]) #reorder the factor
+
+plot_ly(t, x = ~tagName, y = ~Positives, type = 'bar', name = 'Positive', marker = list(color = 'rgb(175, 206, 148)')) %>%
+  add_trace(y = ~-Negatives, name = 'Negative', marker = list(color = 'rgb(173, 65, 87)')) %>%
+  layout(xaxis = list(title = '', tickangle = -45),
+         yaxis = list(title = 'Tags'),
+         barmode = 'relative',
+         margin = list(b = 150))
+} else {print("Not enough data")}
+```
+
+### Stories from `r strftime(cloudsFrom, "%b %Y")`
+```{r}
+allFrame$Story <- gsub("<p>|</p>"," ", allFrame$Story)
+kwicFrame = allFrame %>%
+  dplyr::rename(Date = Date.y) %>%
+  filter(NACSgroup == "Surgery", Date > cloudsFrom) %>%
+  distinct(PostID, Date, Story)
+
+if (length(kwicFrame$Story) > 0) {
+   
+DT::datatable(kwicFrame,
+  options = list(order = list(0, 'desc'), bPaginate = FALSE), 
+  rownames = FALSE
+)
+} else {print("Not enough tags")}
+```
+
+
+Medicine {data-orientation=rows}
+=========================================
+
+Row
+-----------------------------------------
+
+### Are stories becoming more or less positive?
+
+```{r setupMed, include=FALSE}
+
+sf = storyFrame %>% filter(NACSgroup == "Medicine")
+tf = tagFrame %>% filter(PostID %in% unique(sf$PostID))
+
+gg = SelectRunChart(sf, tf, paste0(label, " | ", "Medicine"))
+
+```
+
+```{r}
+gg
+```
+
+### How do you feel? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r}
+  # Select tag type (e.g emotion) and NACS group and dates
+  emoFrame = allFrame %>%
+  filter(tagGroup == "Emotion", NACSgroup == "Medicine", Date.y > cloudsFrom) %>%
+  distinct(PostID, tagGroup, tagName, NACSgroup, polarity)
+
+  if (nrow(emoFrame) > 0) {
+  # Count number of each tag and sum polarity to get overall polarity
+  taggy <- aggregate(polarity ~ tagName, data = emoFrame, FUN=function(x) c(n = length(x), mn = mean(x)) )
+  tagCount <- as.data.frame(as.list(taggy)) # this step is needed due to a bug
+  
+  d3wordcloud(tagCount$tagName, tagCount$polarity.n,rotate.min = 0, rotate.max = 0, size.scale = "sqrt", tooltip = TRUE)
+  
+  }
+```
+
+Row
+-----------------------------------------
+
+### What was good? What could be improved? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r}
+posFrame = allFrame %>%
+  filter(polarity == "1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "Medicine", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+negFrame = allFrame %>%
+  filter(polarity == "-1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "Medicine", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+if (nrow(posFrame) > 0 & nrow(negFrame) > 0) {
+
+# Count number of each tag and sum polarity to get overall polarity
+taggy <- aggregate(polarity ~ tagName, data = posFrame, FUN=function(x) c(n = length(x)))
+tpos = head(taggy[order(-taggy$polarity),],10)
+
+taggy <- aggregate(polarity ~ tagName, data = negFrame, FUN=function(x) c(n = length(x)))
+tneg = head(taggy[order(-taggy$polarity),],10)
+
+t = merge(tpos,tneg,by = "tagName", all = "TRUE")
+t = t[,c("tagName", "polarity.x", "polarity.y")]
+colnames(t) = c("tagName", "Positives", "Negatives")
+t$Positives[is.na(t$Positives)] = 0
+t$Negatives[is.na(t$Negatives)] = 0
+t$percentPos = t$Positive-t$Negatives
+t$tagName = factor(t$tagName, levels = t$tagName[order(t$percentPos,decreasing = TRUE)]) #reorder the factor
+
+plot_ly(t, x = ~tagName, y = ~Positives, type = 'bar', name = 'Positive', marker = list(color = 'rgb(175, 206, 148)')) %>%
+  add_trace(y = ~-Negatives, name = 'Negative', marker = list(color = 'rgb(173, 65, 87)')) %>%
+  layout(xaxis = list(title = '', tickangle = -45),
+         yaxis = list(title = 'Tags'),
+         barmode = 'relative',
+         margin = list(b = 150))
+} else {print("Not enough data")}
+```
+
+### Stories from `r strftime(cloudsFrom, "%b %Y")`
+```{r}
+allFrame$Story <- gsub("<p>|</p>"," ", allFrame$Story)
+kwicFrame = allFrame %>%
+  dplyr::rename(Date = Date.y) %>%
+  filter(NACSgroup == "Medicine", Date > cloudsFrom) %>%
+  distinct(PostID, Date, Story)
+
+if (length(kwicFrame$Story) > 0) {
+   
+DT::datatable(kwicFrame,
+  options = list(order = list(0, 'desc'), bPaginate = FALSE), 
+  rownames = FALSE
+)
+} else {print("Not enough tags")}
+```
+
+Maternity {data-orientation=rows}
+=========================================
+Row {data-orientation=rows}
+-----------------------------------------
+
+### Are stories becoming more or less positive?
+
+```{r setupMat, include=FALSE}
+
+sf = storyFrame %>% filter(NACSgroup == "Maternity")
+tf = tagFrame %>% filter(PostID %in% unique(sf$PostID))
+
+gg = SelectRunChart(sf, tf, paste0(label, " | ", "Maternity"))
+
+```
+
+```{r}
+gg
+```
+
+### How do you feel? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r}
+  # Select tag type (e.g emotion) and NACS group and dates
+  emoFrame = allFrame %>%
+  filter(tagGroup == "Emotion", NACSgroup == "Maternity", Date.y > cloudsFrom) %>%
+  distinct(PostID, tagGroup, tagName, NACSgroup, polarity)
+
+  if (nrow(emoFrame) > 0) {
+  # Count number of each tag and sum polarity to get overall polarity
+  taggy <- aggregate(polarity ~ tagName, data = emoFrame, FUN=function(x) c(n = length(x), mn = mean(x)) )
+  tagCount <- as.data.frame(as.list(taggy)) # this step is needed due to a bug
+  
+  d3wordcloud(tagCount$tagName, tagCount$polarity.n,rotate.min = 0, rotate.max = 0, size.scale = "sqrt", tooltip = TRUE)
+  
+  }
+```
+
+Row 
+-----------------------------------------
+### What was good? What could be improved? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r}
+posFrame = allFrame %>%
+  filter(polarity == "1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "Maternity", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+negFrame = allFrame %>%
+  filter(polarity == "-1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "Maternity", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+if (nrow(posFrame) > 0 & nrow(negFrame) > 0) {
+
+# Count number of each tag and sum polarity to get overall polarity
+taggy <- aggregate(polarity ~ tagName, data = posFrame, FUN=function(x) c(n = length(x)))
+tpos = head(taggy[order(-taggy$polarity),],10)
+
+taggy <- aggregate(polarity ~ tagName, data = negFrame, FUN=function(x) c(n = length(x)))
+tneg = head(taggy[order(-taggy$polarity),],10)
+
+t = merge(tpos,tneg,by = "tagName", all = "TRUE")
+t = t[,c("tagName", "polarity.x", "polarity.y")]
+colnames(t) = c("tagName", "Positives", "Negatives")
+t$Positives[is.na(t$Positives)] = 0
+t$Negatives[is.na(t$Negatives)] = 0
+t$percentPos = t$Positive-t$Negatives
+t$tagName = factor(t$tagName, levels = t$tagName[order(t$percentPos,decreasing = TRUE)]) #reorder the factor
+
+plot_ly(t, x = ~tagName, y = ~Positives, type = 'bar', name = 'Positive', marker = list(color = 'rgb(175, 206, 148)')) %>%
+  add_trace(y = ~-Negatives, name = 'Negative', marker = list(color = 'rgb(173, 65, 87)')) %>%
+  layout(xaxis = list(title = '', tickangle = -45),
+         yaxis = list(title = 'Tags'),
+         barmode = 'relative',
+         margin = list(b = 150))
+} else {print("Not enough data")}
+```
+
+### Stories from `r strftime(cloudsFrom, "%b %Y")`
+```{r}
+allFrame$Story <- gsub("<p>|</p>"," ", allFrame$Story)
+kwicFrame = allFrame %>%
+  dplyr::rename(Date = Date.y) %>%
+  filter(NACSgroup == "Maternity", Date > cloudsFrom) %>%
+  distinct(PostID, Date, Story)
+
+if (length(kwicFrame$Story) > 0) {
+   
+DT::datatable(kwicFrame,
+  options = list(order = list(0, 'desc'), bPaginate = FALSE), 
+  rownames = FALSE
+)
+} else {print("Not enough tags")}
+```
+
+
+Emergency {data-orientation=rows}
+=========================================
+
+Row {data-orientation=rows}
+-----------------------------------------
+
+### Are stories becoming more or less positive?
+
+```{r setupEm, include=FALSE}
+
+sf = storyFrame %>% filter(NACSgroup == "Emergency")
+tf = tagFrame %>% filter(PostID %in% unique(sf$PostID))
+
+gg = SelectRunChart(sf, tf, paste0(label, " | ", "Emergency"))
+
+```
+
+```{r}
+gg
+```
+
+
+### How do you feel? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r}
+  # Select tag type (e.g emotion) and NACS group and dates
+  emoFrame = allFrame %>%
+  filter(tagGroup == "Emotion", NACSgroup == "Emergency", Date.y > cloudsFrom) %>%
+  distinct(PostID, tagGroup, tagName, NACSgroup, polarity)
+
+  if (nrow(emoFrame) > 0) {
+  # Count number of each tag and sum polarity to get overall polarity
+  taggy <- aggregate(polarity ~ tagName, data = emoFrame, FUN=function(x) c(n = length(x), mn = mean(x)) )
+  tagCount <- as.data.frame(as.list(taggy)) # this step is needed due to a bug
+  
+  d3wordcloud(tagCount$tagName, tagCount$polarity.n,rotate.min = 0, rotate.max = 0, size.scale = "sqrt", tooltip = TRUE)
+  
+  }
+```
+
+
+Row
+-----------------------------------------
+
+### What was good? What could be improved? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r}
+posFrame = allFrame %>%
+  filter(polarity == "1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "Emergency", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+negFrame = allFrame %>%
+  filter(polarity == "-1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "Emergency", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+if (nrow(posFrame) > 0 & nrow(negFrame) > 0) {
+
+# Count number of each tag and sum polarity to get overall polarity
+taggy <- aggregate(polarity ~ tagName, data = posFrame, FUN=function(x) c(n = length(x)))
+tpos = head(taggy[order(-taggy$polarity),],10)
+
+taggy <- aggregate(polarity ~ tagName, data = negFrame, FUN=function(x) c(n = length(x)))
+tneg = head(taggy[order(-taggy$polarity),],10)
+
+t = merge(tpos,tneg,by = "tagName", all = "TRUE")
+t = t[,c("tagName", "polarity.x", "polarity.y")]
+colnames(t) = c("tagName", "Positives", "Negatives")
+t$Positives[is.na(t$Positives)] = 0
+t$Negatives[is.na(t$Negatives)] = 0
+t$percentPos = t$Positive-t$Negatives
+t$tagName = factor(t$tagName, levels = t$tagName[order(t$percentPos,decreasing = TRUE)]) #reorder the factor
+
+plot_ly(t, x = ~tagName, y = ~Positives, type = 'bar', name = 'Positive', marker = list(color = 'rgb(175, 206, 148)')) %>%
+  add_trace(y = ~-Negatives, name = 'Negative', marker = list(color = 'rgb(173, 65, 87)')) %>%
+  layout(xaxis = list(title = '', tickangle = -45),
+         yaxis = list(title = 'Tags'),
+         barmode = 'relative',
+         margin = list(b = 150))
+} else {print("Not enough data")}
+```
+
+### Stories from `r strftime(cloudsFrom, "%b %Y")`
+```{r}
+allFrame$Story <- gsub("<p>|</p>"," ", allFrame$Story)
+kwicFrame = allFrame %>%
+  dplyr::rename(Date = Date.y) %>%
+  filter(NACSgroup == "Emergency", Date > cloudsFrom) %>%
+  distinct(PostID, Date, Story)
+
+if (length(kwicFrame$Story) > 0) {
+   
+DT::datatable(kwicFrame,
+  options = list(order = list(0, 'desc'), bPaginate = FALSE), 
+  rownames = FALSE
+)
+} else {print("Not enough tags")}
+```
+
+Mental Health {data-orientation=rows}
+=========================================
+
+Row {data-orientation=rows}
+-----------------------------------------
+
+### Are stories becoming more or less positive?
+
+```{r setupMH, include=FALSE}
+
+sf = storyFrame %>% filter(NACSgroup == "Mental Health")
+tf = tagFrame %>% filter(PostID %in% unique(sf$PostID))
+
+gg = SelectRunChart(sf, tf, paste0(label, " | ", "Mental Health"))
+
+```
+
+```{r}
+gg
+```
+
+
+### How do you feel? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r}
+  # Select tag type (e.g emotion) and NACS group and dates
+  emoFrame = allFrame %>%
+  filter(tagGroup == "Emotion", NACSgroup == "Mental Health", Date.y > cloudsFrom) %>%
+  distinct(PostID, tagGroup, tagName, NACSgroup, polarity)
+
+  if (nrow(emoFrame) > 0) {
+  # Count number of each tag and sum polarity to get overall polarity
+  taggy <- aggregate(polarity ~ tagName, data = emoFrame, FUN=function(x) c(n = length(x), mn = mean(x)) )
+  tagCount <- as.data.frame(as.list(taggy)) # this step is needed due to a bug
+  
+  d3wordcloud(tagCount$tagName, tagCount$polarity.n,rotate.min = 0, rotate.max = 0, size.scale = "sqrt", tooltip = TRUE)
+  
+  } else {print("Not enough data")}
+```
+
+
+
+Row
+-----------------------------------------
+
+### What was good? What could be improved? tags from `r strftime(cloudsFrom, "%b %Y")` 
+
+```{r}
+posFrame = allFrame %>%
+  filter(polarity == "1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "Mental Health", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+negFrame = allFrame %>%
+  filter(polarity == "-1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "Mental Health", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+if (nrow(posFrame) > 0 & nrow(negFrame) > 0) {
+
+# Count number of each tag and sum polarity to get overall polarity
+taggy <- aggregate(polarity ~ tagName, data = posFrame, FUN=function(x) c(n = length(x)))
+tpos = head(taggy[order(-taggy$polarity),],10)
+
+taggy <- aggregate(polarity ~ tagName, data = negFrame, FUN=function(x) c(n = length(x)))
+tneg = head(taggy[order(-taggy$polarity),],10)
+
+t = merge(tpos,tneg,by = "tagName", all = "TRUE")
+t = t[,c("tagName", "polarity.x", "polarity.y")]
+colnames(t) = c("tagName", "Positives", "Negatives")
+t$Positives[is.na(t$Positives)] = 0
+t$Negatives[is.na(t$Negatives)] = 0
+t$percentPos = t$Positive-t$Negatives
+t$tagName = factor(t$tagName, levels = t$tagName[order(t$percentPos,decreasing = TRUE)]) #reorder the factor
+
+plot_ly(t, x = ~tagName, y = ~Positives, type = 'bar', name = 'Positive', marker = list(color = 'rgb(175, 206, 148)')) %>%
+  add_trace(y = ~-Negatives, name = 'Negative', marker = list(color = 'rgb(173, 65, 87)')) %>%
+  layout(xaxis = list(title = '', tickangle = -45),
+         yaxis = list(title = 'Tags'),
+         barmode = 'relative',
+         margin = list(b = 150))
+} else {print("Not enough data")}
+```
+
+
+### Stories from `r strftime(cloudsFrom, "%b %Y")`
+```{r}
+allFrame$Story <- gsub("<p>|</p>"," ", allFrame$Story)
+kwicFrame = allFrame %>%
+  dplyr::rename(Date = Date.y) %>%
+  filter(NACSgroup == "Mental Health", Date > cloudsFrom) %>%
+  distinct(PostID, Date, Story)
+
+if (length(kwicFrame$Story) > 0) {
+   
+DT::datatable(kwicFrame,
+  options = list(order = list(0, 'desc'), bPaginate = FALSE), 
+  rownames = FALSE
+)
+} else {print("Not enough tags")}
+```
+
+AHP {data-orientation=rows}
+=========================================
+
+Row {data-orientation=rows}
+-----------------------------------------
+
+### Are stories becoming more or less positive?
+
+```{r setupAHP, include=FALSE}
+
+sf = storyFrame %>% filter(NACSgroup == "AHP")
+tf = tagFrame %>% filter(PostID %in% unique(sf$PostID))
+
+gg = SelectRunChart(sf, tf, paste0(label, " | ", "AHP"))
+
+```
+
+```{r}
+gg
+```
+
+
+### How do you feel? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r}
+  # Select tag type (e.g emotion) and NACS group and dates
+  emoFrame = allFrame %>%
+  filter(tagGroup == "Emotion", NACSgroup == "AHP", Date.y > cloudsFrom) %>%
+  distinct(PostID, tagGroup, tagName, NACSgroup, polarity)
+
+  if (nrow(emoFrame) > 0) {
+  # Count number of each tag and sum polarity to get overall polarity
+  taggy <- aggregate(polarity ~ tagName, data = emoFrame, FUN=function(x) c(n = length(x), mn = mean(x)) )
+  tagCount <- as.data.frame(as.list(taggy)) # this step is needed due to a bug
+  
+  d3wordcloud(tagCount$tagName, tagCount$polarity.n,rotate.min = 0, rotate.max = 0, size.scale = "sqrt", tooltip = TRUE)
+  
+  } else {print("Not enough data")}
+```
+
+
+
+Row
+-----------------------------------------
+
+### What was good? What could be improved? tags from `r strftime(cloudsFrom, "%b %Y")`
+
+```{r}
+posFrame = allFrame %>%
+  filter(polarity == "1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "AHP", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+negFrame = allFrame %>%
+  filter(polarity == "-1",    
+         #!tagGroup %in% c("Emotion","Condition","Part of Body","Cause of disease") #Think CO Bubbles exclude these
+        allFrame$tagGroup != "Emotion", NACSgroup == "AHP", Date.y> cloudsFrom) %>% 
+  distinct(PostID, tagName, polarity)
+
+if (nrow(posFrame) > 0 & nrow(negFrame) > 0) {
+
+# Count number of each tag and sum polarity to get overall polarity
+taggy <- aggregate(polarity ~ tagName, data = posFrame, FUN=function(x) c(n = length(x)))
+tpos = head(taggy[order(-taggy$polarity),],10)
+
+taggy <- aggregate(polarity ~ tagName, data = negFrame, FUN=function(x) c(n = length(x)))
+tneg = head(taggy[order(-taggy$polarity),],10)
+
+t = merge(tpos,tneg,by = "tagName", all = "TRUE")
+t = t[,c("tagName", "polarity.x", "polarity.y")]
+colnames(t) = c("tagName", "Positives", "Negatives")
+t$Positives[is.na(t$Positives)] = 0
+t$Negatives[is.na(t$Negatives)] = 0
+t$percentPos = t$Positive-t$Negatives
+t$tagName = factor(t$tagName, levels = t$tagName[order(t$percentPos,decreasing = TRUE)]) #reorder the factor
+
+plot_ly(t, x = ~tagName, y = ~Positives, type = 'bar', name = 'Positive', marker = list(color = 'rgb(175, 206, 148)')) %>%
+  add_trace(y = ~-Negatives, name = 'Negative', marker = list(color = 'rgb(173, 65, 87)')) %>%
+  layout(xaxis = list(title = '', tickangle = -45),
+         yaxis = list(title = 'Tags'),
+         barmode = 'relative',
+         margin = list(b = 150))
+} else {print("Not enough data")}
+```
+
+
+### Stories from `r strftime(cloudsFrom, "%b %Y")`
+```{r}
+allFrame$Story <- gsub("<p>|</p>"," ", allFrame$Story)
+kwicFrame = allFrame %>%
+  dplyr::rename(Date = Date.y) %>%
+  filter(NACSgroup == "AHP", Date > cloudsFrom) %>%
+  distinct(PostID, Date, Story)
+
+if (length(kwicFrame$Story) > 0) {
+   
+DT::datatable(kwicFrame,
+  options = list(order = list(0, 'desc'), bPaginate = FALSE), 
+  rownames = FALSE
+)
+} else {print("Not enough tags")}
+```
