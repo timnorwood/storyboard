@@ -26,6 +26,6 @@ Tag information about the services used are also recorded with each story and us
 
 Storyboards have been created using R and the Flexdashboard package. There are three main script in this respository:
 
-- GetStories: Reads data from Care Opinion using the API(s)
+- GetStories: Reads data from Care Opinion using the API(s). You need a Care Opinion subscription to use get and API key.
 - Storyboard: Flexdashboard script for creating the storyboards
 - Monthly: Script to run GetStories and Storyboard and produce storyboards for different NHS boards and hospitals. 
