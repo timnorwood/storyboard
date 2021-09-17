@@ -2,7 +2,7 @@
 setwd("N:\\set\\your\\working\\directory")
 
 # Get Care Opinion data
-source( "Scripts\\20200903 GetStories v2.R")
+source( "20200903 GetStories v2.R")
 
 # Create Flexdashboards
 library(rmarkdown)
