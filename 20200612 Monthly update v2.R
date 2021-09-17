@@ -10,7 +10,7 @@ load("Output\\storyFrameSC.rda")
 load("Output\\tagFrameSC.rda")
   
 renderHBStoryboard <- function(hdr, label, POname, shpName, OutName) {
-  rmarkdown::render("Storyboard\\20200616_storyboard_v0.9.1.Rmd", params = list(
+  rmarkdown::render("20200616_storyboard_v0.9.1.Rmd", params = list(
     hdr = hdr,
     label = label,
     POname = POname,
